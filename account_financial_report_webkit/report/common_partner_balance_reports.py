@@ -75,11 +75,16 @@ class CommonPartnerBalanceReportHeaderWebkit(CommonBalanceReportHeaderWebkit,
                             {'init_balance': initial_balances['init_balance']})
 
             # compute balance for the partner
+            partner_to_remove = []
             for partner_id, partner_details in details.iteritems():
                 details[partner_id]['balance'] = details[partner_id].\
                     get('init_balance', 0.0) + \
                     details[partner_id].get('debit', 0.0) - \
                     details[partner_id].get('credit', 0.0)
+                if not round(details[partner_id]['balance'], 4):
+                    partner_to_remove.append(partner_id)
+            for p_id in partner_to_remove:
+                del details[p_id]
             res[account_id] = details
 
         return res
