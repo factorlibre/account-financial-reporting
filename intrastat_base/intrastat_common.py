@@ -34,13 +34,13 @@ class IntrastatCommon(models.AbstractModel):
     "and services"
 
     @api.one
-    @api.depends('declaration_line_ids.amount_company_currency')
+    # @api.depends('declaration_line_ids.amount_company_currency')
     def _compute_numbers(self):
         total_amount = 0.0
         num_lines = 0
-        for line in self.declaration_line_ids:
-            total_amount += line.amount_company_currency
-            num_lines += 1
+        # for line in self.declaration_line_ids:
+        #     total_amount += line.amount_company_currency
+        #     num_lines += 1
         self.num_decl_lines = num_lines
         self.total_amount = total_amount
 
@@ -137,7 +137,7 @@ class IntrastatCommon(models.AbstractModel):
             'nodestroy': True,
             'target': 'current',
             'res_id': attach_id,
-            }
+        }
         return action
 
     @api.one
