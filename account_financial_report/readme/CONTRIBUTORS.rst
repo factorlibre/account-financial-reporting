@@ -20,6 +20,7 @@
 
   * Pedro M. Baeza
   * Sergio Teruel
+* Luis J. Salvatierra <luis.salvatierra@factorlibre.com>
 
 Much of the work in this module was done at a sprint in Sorrento, Italy in
 April 2016.
