@@ -1,6 +1,6 @@
 # Copyright 2017 ACSONE SA/NV
+# © 2022 FactorLibre - Luis J. Salvatierra <luis.salvatierra@factorlibre.com>
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
-
 from odoo import models, fields, api
 
 DIGITS = (16, 2)
@@ -621,8 +621,8 @@ class ReportJournalLedger(models.TransientModel):
         cls = type(self)
         if not force and (cls._transient_check_count < 21):
             return True  # no vacuum cleaning this time
-        self.env.cr.execute("DELETE FROM report_journal_ledger_move_line")
-        self.env.cr.execute("DELETE FROM report_journal_ledger_move")
+        self.env.cr.execute("TRUNCATE ONLY report_journal_ledger_move, "
+                            "report_journal_ledger_move_line RESTART IDENTITY")
         return super(ReportJournalLedger, self)._transient_vacuum(force=force)
 
 
