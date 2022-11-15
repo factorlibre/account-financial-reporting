@@ -137,7 +137,7 @@ class ReportJournalLedger(models.TransientModel):
         params = (
             self.env.uid,
             self.id,
-            tuple(self.journal_ids.ids),
+            tuple(self.with_context(active_test=False).journal_ids.ids),
             self.company_id.id,
         )
         self.env.cr.execute(sql, params)

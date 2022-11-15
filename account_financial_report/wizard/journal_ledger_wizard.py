@@ -91,8 +91,9 @@ class JournalLedgerReportWizard(models.TransientModel):
         if self.company_id and self.date_range_id.company_id and \
                 self.date_range_id.company_id != self.company_id:
             self.date_range_id = False
-        if self.company_id and self.journal_ids:
-            self.journal_ids = self.journal_ids.filtered(
+        journals = self.with_context(active_test=False).journal_ids
+        if self.company_id and journals:
+            self.journal_ids = journals.filtered(
                 lambda p: p.company_id == self.company_id or not p.company_id)
         res = {'domain': {'journal_ids': []}}
         if not self.company_id:
@@ -137,8 +138,13 @@ class JournalLedgerReportWizard(models.TransientModel):
         journals = self.journal_ids
         if not journals:
             # Not selecting a journal means that we'll display all journals
-            journals = self.env['account.journal'].search(
-                [('company_id', '=', self.company_id.id)])
+            journals = self.with_context(
+                active_test=False
+            ).env['account.journal'].search(
+                [
+                    ('company_id', '=', self.company_id.id),
+                ]
+            )
         return {
             'date_from': self.date_from,
             'date_to': self.date_to,
