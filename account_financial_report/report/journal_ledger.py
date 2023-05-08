@@ -455,7 +455,6 @@ class ReportJournalLedger(models.TransientModel):
             WHERE
                 jrqml.report_journal_ledger_id = %s
         """
-
         tax_ids_by_journal_id = {}
         for report_journal in self.report_journal_ledger_ids:
             if report_journal.id not in tax_ids_by_journal_id:
@@ -488,75 +487,61 @@ class ReportJournalLedger(models.TransientModel):
                 %s as tax_id,
                 at.name as tax_name,
                 at.description as tax_code,
-                (
-                    SELECT sum(debit)
-                    FROM report_journal_ledger_move_line jrqml2
-                    WHERE jrqml2.report_journal_ledger_id = %s
-                    AND (
-                        SELECT
-                            count(*)
-                        FROM
-                            account_move_line_account_tax_rel aml_at_rel
-                        WHERE
-                            aml_at_rel.account_move_line_id =
-                                jrqml2.move_line_id
-                        AND
-                            aml_at_rel.account_tax_id = %s
-                    ) > 0
-                ) as base_debit,
-                (
-                    SELECT sum(credit)
-                    FROM report_journal_ledger_move_line jrqml2
-                    WHERE jrqml2.report_journal_ledger_id = %s
-                    AND (
-                        SELECT
-                            count(*)
-                        FROM
-                            account_move_line_account_tax_rel aml_at_rel
-                        WHERE
-                            aml_at_rel.account_move_line_id =
-                                jrqml2.move_line_id
-                        AND
-                            aml_at_rel.account_tax_id = %s
-                    ) > 0
-                ) as base_credit,
-                (
-                    SELECT sum(debit)
-                    FROM report_journal_ledger_move_line jrqml2
-                    WHERE jrqml2.report_journal_ledger_id = %s
-                    AND jrqml2.tax_id = %s
-                ) as tax_debit,
-                (
-                    SELECT sum(credit)
-                    FROM report_journal_ledger_move_line jrqml2
-                    WHERE jrqml2.report_journal_ledger_id = %s
-                    AND jrqml2.tax_id = %s
-                ) as tax_credit
+                rjlml1.base_debit as base_debit,
+                rjlml1.base_credit as base_credit,
+                rjlml2.tax_debit as tax_debit,
+                rjlml2.tax_credit as tax_credit
             FROM
                 report_journal_ledger_journal rjqj
-            LEFT JOIN
-                account_tax at
-                    on (at.id = %s)
+                LEFT JOIN account_tax at on (at.id = %s)
+                LEFT JOIN (
+                    SELECT
+                        report_journal_ledger_id,
+                        tax_id,
+                        sum(debit) as base_debit,
+                        sum(credit) as base_credit
+                    FROM
+                        report_journal_ledger_move_line jrqml2
+                    WHERE
+                        jrqml2.report_journal_ledger_id = %s
+                        AND (
+                            SELECT
+                                count(*)
+                            FROM
+                                account_move_line_account_tax_rel aml_at_rel
+                            WHERE
+                                aml_at_rel.account_move_line_id = jrqml2.move_line_id
+                                AND aml_at_rel.account_tax_id = %s ) > 0
+                            GROUP BY
+                                report_journal_ledger_id, tax_id
+                        ) rjlml1
+                        on (rjlml1.report_journal_ledger_id = rjqj.id and rjlml1.tax_id = at.id)
+                LEFT JOIN (
+                    SELECT
+                        report_journal_ledger_id,
+                        tax_id,
+                        sum(debit) as tax_debit,
+                        sum(credit) as tax_credit
+                    FROM
+                        report_journal_ledger_move_line
+                    GROUP BY
+                        report_journal_ledger_id, tax_id
+                        ) rjlml2
+                        on (rjlml2.report_journal_ledger_id = rjqj.id and rjlml2.tax_id = at.id)
             WHERE
                 rjqj.id = %s
         """
 
         for report_journal_ledger_id in tax_ids_by_journal_id:
             tax_ids = tax_ids_by_journal_id[report_journal_ledger_id]
-            for tax_id in tax_ids:
+            for i, tax_id in enumerate(tax_ids):
                 params = (
                     self.env.uid,
                     self.id,
                     report_journal_ledger_id,
                     tax_id,
-                    report_journal_ledger_id,
                     tax_id,
                     report_journal_ledger_id,
-                    tax_id,
-                    report_journal_ledger_id,
-                    tax_id,
-                    report_journal_ledger_id,
-                    tax_id,
                     tax_id,
                     report_journal_ledger_id,
                 )
@@ -569,18 +554,22 @@ class ReportJournalLedger(models.TransientModel):
             UPDATE
                 report_journal_ledger_journal rjqj
             SET
-                debit = (
-                    SELECT sum(rjqml.debit)
-                    FROM report_journal_ledger_move_line rjqml
-                    WHERE rjqml.report_journal_ledger_id = rjqj.id
-                ),
-                credit = (
-                    SELECT sum(rjqml.credit)
-                    FROM report_journal_ledger_move_line rjqml
-                    WHERE rjqml.report_journal_ledger_id = rjqj.id
-                )
+                debit = rjqml.debit,
+                credit = rjqml.credit
+            FROM
+                (
+                    select
+                        rjqml.report_journal_ledger_id,
+                        sum(rjqml.debit) as debit,
+                        sum(rjqml.credit) as credit
+                    FROM
+                        report_journal_ledger_move_line rjqml
+                    group by
+                        rjqml.report_journal_ledger_id
+                ) as rjqml
             WHERE
                 rjqj.report_id = %s
+                and rjqml.report_journal_ledger_id = rjqj.id
         """
         self.env.cr.execute(sql, (self.id,))
 
