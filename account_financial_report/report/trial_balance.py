@@ -472,12 +472,21 @@ WHERE report_trial_balance_account.account_group_id = computed.account_group_id
 
     def _add_account_group_account_values(self):
         """Compute values for report_trial_balance_account group in child."""
-        query_update_account_group = """
-DROP AGGREGATE IF EXISTS array_concat_agg(anyarray);
-CREATE AGGREGATE array_concat_agg(anyarray) (
+        array_type = "anyarray"
+        if self.env.cr._cnx.server_version > 130000:
+            array_type = "anycompatiblearray"
+        aggregate_query = """
+DROP AGGREGATE IF EXISTS array_concat_agg({array_type});
+CREATE AGGREGATE array_concat_agg({array_type}) (
   SFUNC = array_cat,
-  STYPE = anyarray
+  STYPE = {array_type}
 );
+        """.format(
+            array_type=array_type
+        )
+        self.env.cr.execute(aggregate_query)
+
+        query_update_account_group = """
 WITH aggr AS(WITH computed AS (WITH RECURSIVE cte AS (
    SELECT account_group_id, account_group_id AS parent_id,
     ARRAY[account_id]::int[] as child_account_ids
