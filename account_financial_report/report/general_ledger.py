@@ -242,6 +242,19 @@ class GeneralLedgerReportCompute(models.TransientModel):
     def get_html(self, given_context=None):
         return self._get_html()
 
+    @api.model
+    def _transient_vacuum(self, force=False):
+        """Remove general ledger subtables first for avoiding a costly
+        ondelete operation.
+        """
+        # Next 3 lines adapted from super method for mimicking behavior
+        cls = type(self)
+        if not force and (cls._transient_check_count < 21):
+            return True  # no vacuum cleaning this time
+        self.env.cr.execute("TRUNCATE ONLY report_general_ledger_move_line "
+                            "RESTART IDENTITY")
+        return super(GeneralLedgerReportCompute, self)._transient_vacuum(force=force)
+
     @api.multi
     def compute_data_for_report(self,
                                 with_line_details=True,
