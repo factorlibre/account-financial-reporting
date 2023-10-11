@@ -364,3 +364,15 @@ class TestJournalReport(TransactionCase):
 
         self.check_report_journal_debit_credit(report, 250, 250)
         self.check_report_journal_debit_credit_taxes(report, 300, 0, 50, 0)
+
+    def test_04_archived_journal(self):
+        self.journal_sale.active = False
+        journal_ids = self.journal_sale.ids
+        wizard = self.JournalReportObj.create({
+            "date_from": self.fy_date_start,
+            "date_to": self.fy_date_end,
+            "company_id": self.company.id,
+            "journal_ids": [(6, 0, journal_ids)]
+        })
+        report_vals = wizard._prepare_report_journal_ledger()
+        self.assertEqual(report_vals["journal_ids"][0][2], journal_ids)
