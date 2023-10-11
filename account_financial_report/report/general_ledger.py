@@ -75,6 +75,20 @@ class GeneralLedgerReport(models.TransientModel):
         store=True
     )
 
+    @api.model
+    def _transient_vacuum(self, force=False):
+        """Remove general ledger subtables first for avoiding a costly
+        ondelete operation.
+        """
+        # Next 3 lines adapted from super method for mimicking behavior
+        cls = type(self)
+        if not force and (cls._transient_check_count < 21):
+            return True  # no vacuum cleaning this time
+        self.env.cr.execute(
+            "TRUNCATE ONLY report_general_ledger_move_line RESTART IDENTITY"
+        )
+        return super()._transient_vacuum(force=force)
+
 
 class GeneralLedgerReportAccount(models.TransientModel):
 
