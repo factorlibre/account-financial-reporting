@@ -473,7 +473,7 @@ WHERE report_trial_balance_account.account_group_id = computed.account_group_id
     def _add_account_group_account_values(self):
         """Compute values for report_trial_balance_account group in child."""
         array_type = "anyarray"
-        if self.env.cr._cnx.server_version > 130000:
+        if self.env.cr._cnx.server_version >= 140000:
             array_type = "anycompatiblearray"
         aggregate_query = """
 DROP AGGREGATE IF EXISTS array_concat_agg({array_type});
