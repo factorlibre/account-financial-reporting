@@ -430,79 +430,6 @@ class GeneralLedgerReport(models.AbstractModel):
             res.append({"id": 0, "name": ""})
         return res
 
-    # def process_ml_data(
-    #     self,
-    #     move_lines,
-    #     journal_ids,
-    #     taxes_ids,
-    #     analytic_ids,
-    #     full_reconcile_ids,
-    #     full_reconcile_data,
-    #     gen_ld_data,
-    #     foreign_currency,
-    #     grouped_by,
-    #     acc_prt_account_ids,
-    # ):
-    #     for move_line in move_lines:
-    #         journal_ids.add(move_line.journal_id[0])
-    #         for tax_id in move_line.tax_ids:
-    #             taxes_ids.add(tax_id)
-    #         for analytic_account in move_line.analytic_distribution or {}:
-    #             analytic_ids.add(int(analytic_account))
-    #         if move_line.full_reconcile_id:
-    #             rec_id = move_line.full_reconcile_id[0]
-    #             if rec_id not in full_reconcile_ids:
-    #                 full_reconcile_data.update(
-    #                     {
-    #                         rec_id: {
-    #                             "id": rec_id,
-    #                             "name": move_line.full_reconcile_id[1],
-    #                         }
-    #                     }
-    #                 )
-    #                 full_reconcile_ids.add(rec_id)
-    #         acc_id = move_line.account_id[0]
-    #         ml_id = move_line.id
-    #         if acc_id not in gen_ld_data.keys():
-    #             gen_ld_data[acc_id] = self._initialize_data(foreign_currency)
-    #             gen_ld_data[acc_id]["id"] = acc_id
-    #             gen_ld_data[acc_id]["name"] = move_line.account_id[1]
-    #             if grouped_by:
-    #                 gen_ld_data[acc_id][grouped_by] = False
-    #         if acc_id in acc_prt_account_ids:
-    #             item_ids = self._prepare_ml_items(move_line, grouped_by)
-    #             for item in item_ids:
-    #                 item_id = item["id"]
-    #                 if item_id not in gen_ld_data[acc_id]:
-    #                     if grouped_by:
-    #                         gen_ld_data[acc_id][grouped_by] = True
-    #                     gen_ld_data[acc_id][item_id] = self._initialize_data(
-    #                         foreign_currency
-    #                     )
-    #                     gen_ld_data[acc_id][item_id]["id"] = item_id
-    #                     gen_ld_data[acc_id][item_id]["name"] = item["name"]
-    #                 gen_ld_data[acc_id][item_id][ml_id] = self._get_move_line_data(
-    #                     move_line
-    #                 )
-    #                 gen_ld_data[acc_id][item_id]["fin_bal"][
-    #                     "credit"
-    #                 ] += move_line.credit
-    #                 gen_ld_data[acc_id][item_id]["fin_bal"]["debit"] += move_line.debit
-    #                 gen_ld_data[acc_id][item_id]["fin_bal"][
-    #                     "balance"
-    #                 ] += move_line.balance
-    #                 if foreign_currency:
-    #                     gen_ld_data[acc_id][item_id]["fin_bal"][
-    #                         "bal_curr"
-    #                     ] += move_line.amount_currency
-    #         else:
-    #             gen_ld_data[acc_id][ml_id] = self._get_move_line_data(move_line)
-    #         gen_ld_data[acc_id]["fin_bal"]["credit"] += move_line.credit
-    #         gen_ld_data[acc_id]["fin_bal"]["debit"] += move_line.debit
-    #         gen_ld_data[acc_id]["fin_bal"]["balance"] += move_line.balance
-    #         if foreign_currency:
-    #             gen_ld_data[acc_id]["fin_bal"]["bal_curr"] += move_line.amount_currency
-
     def process_ml_data(
         self,
         move_lines,
@@ -605,42 +532,37 @@ class GeneralLedgerReport(models.AbstractModel):
         analytic_ids = set()
         full_reconcile_data = {}
         acc_prt_account_ids = self._get_acc_prt_accounts_ids(company_id, grouped_by)
-        batch_size = 25000  # Reduced batch size for better memory management
+        batch_size = 50000
         offset = 0
         MoveLine = namedtuple("MoveLine", ml_fields)
+        test_enable = self.env.context.get("test_enable", False)
 
         async def fetch_move_lines(offset):
-            if not self.env.context.get("test_enable", False):
-                new_cr = sql_db.db_connect(self.env.cr.dbname).cursor()
-                new_env = api.Environment(new_cr, self.env.uid, self.env.context.copy())
-                move_lines = (
-                    new_env["account.move.line"]
-                    .with_context(prefetch_fields=False)
-                    .search(
-                        domain=domain,
-                        order="date,move_name",
-                        limit=batch_size,
-                        offset=offset,
-                    )
+            new_cr = (
+                sql_db.db_connect(self.env.cr.dbname).cursor()
+                if not test_enable
+                else None
+            )
+            new_env = (
+                api.Environment(new_cr, self.env.uid, self.env.context.copy())
+                if not test_enable
+                else self.env
+            )
+            move_lines = (
+                new_env["account.move.line"]
+                .with_context(prefetch_fields=False)
+                .search(
+                    domain=domain,
+                    order="date,move_name",
+                    limit=batch_size,
+                    offset=offset,
                 )
-                move_lines_data = move_lines.read(ml_fields)
-                move_lines = [MoveLine(**line) for line in move_lines_data]
-                print(move_lines)
-                return move_lines, new_cr, new_env
-            else:
-                move_lines = (
-                    self.env["account.move.line"]
-                    .with_context(prefetch_fields=False)
-                    .search(
-                        domain=domain,
-                        order="date,move_name",
-                        limit=batch_size,
-                        offset=offset,
-                    )
-                )
-                move_lines_data = move_lines.read(ml_fields)
-                move_lines = [MoveLine(**line) for line in move_lines_data]
-                return move_lines, None, self.env
+            )
+            move_lines_data = move_lines.with_context(prefetch_fields=False).read(
+                ml_fields
+            )
+            move_lines = [MoveLine(**line) for line in move_lines_data]
+            return move_lines, new_cr, new_env
 
         async def process_batches():
             nonlocal offset
@@ -664,12 +586,10 @@ class GeneralLedgerReport(models.AbstractModel):
                     acc_prt_account_ids,
                 )
 
-                offset += batch_size
-                del move_lines
-                gc.collect()  # Invoke garbage collection
-
                 if new_cr:
                     new_cr.close()
+                offset += batch_size
+                gc.collect()
 
         asyncio.run(process_batches())
 
@@ -771,76 +691,6 @@ class GeneralLedgerReport(models.AbstractModel):
                     continue
                 list_grouped += [group_item]
         return account, list_grouped
-
-    # def _create_general_ledger(
-    #     self,
-    #     gen_led_data,
-    #     accounts_data,
-    #     grouped_by,
-    #     rec_after_date_to_ids,
-    #     hide_account_at_0,
-    # ):
-    #     general_ledger = []
-    #     rounding = self.env.company.currency_id.rounding
-    #     for acc_id in gen_led_data.keys():
-    #         account = {}
-    #         account.update(
-    #             {
-    #                 "code": accounts_data[acc_id]["code"],
-    #                 "name": accounts_data[acc_id]["name"],
-    #                 "type": "account",
-    #                 "currency_id": accounts_data[acc_id]["currency_id"],
-    #                 "centralized": accounts_data[acc_id]["centralized"],
-    #                 "grouped_by": grouped_by,
-    #             }
-    #         )
-    #         if grouped_by and not gen_led_data[acc_id][grouped_by]:
-    #             account = self._create_account(
-    #                 account, acc_id, gen_led_data, rec_after_date_to_ids
-    #             )
-    #             if (
-    #                 hide_account_at_0
-    #                 and float_is_zero(
-    #                     gen_led_data[acc_id]["init_bal"]["balance"],
-    #                     precision_rounding=rounding,
-    #                 )
-    #                 and account["move_lines"] == []
-    #             ):
-    #                 continue
-    #         else:
-    #             if grouped_by:
-    #                 account, list_grouped = self._get_list_grouped_item(
-    #                     gen_led_data[acc_id],
-    #                     account,
-    #                     rec_after_date_to_ids,
-    #                     hide_account_at_0,
-    #                     rounding,
-    #                 )
-    #                 account.update({"list_grouped": list_grouped})
-    #                 if (
-    #                     hide_account_at_0
-    #                     and float_is_zero(
-    #                         gen_led_data[acc_id]["init_bal"]["balance"],
-    #                         precision_rounding=rounding,
-    #                     )
-    #                     and account["list_grouped"] == []
-    #                 ):
-    #                     continue
-    #             else:
-    #                 account = self._create_account_not_show_item(
-    #                     account, acc_id, gen_led_data, rec_after_date_to_ids, grouped_by
-    #                 )
-    #                 if (
-    #                     hide_account_at_0
-    #                     and float_is_zero(
-    #                         gen_led_data[acc_id]["init_bal"]["balance"],
-    #                         precision_rounding=rounding,
-    #                     )
-    #                     and account["move_lines"] == []
-    #                 ):
-    #                     continue
-    #         general_ledger += [account]
-    #     return general_ledger
 
     def _create_general_ledger(
         self,
@@ -1018,7 +868,6 @@ class GeneralLedgerReport(models.AbstractModel):
             extra_domain,
             grouped_by,
         )
-        print("Method _get_period_ml_data fully executed ...")
         general_ledger = self._create_general_ledger(
             gen_ld_data,
             accounts_data,
@@ -1026,7 +875,6 @@ class GeneralLedgerReport(models.AbstractModel):
             rec_after_date_to_ids,
             hide_account_at_0,
         )
-        print("Method _create_general_ledger fully executed ...")
         if centralize:
             for account in general_ledger:
                 if account["centralized"]:
@@ -1042,9 +890,7 @@ class GeneralLedgerReport(models.AbstractModel):
                     if grouped_by and account[grouped_by]:
                         account[grouped_by] = False
                         del account["list_grouped"]
-        print("Block centralize passed")
         general_ledger = sorted(general_ledger, key=lambda k: k["code"])
-        print("General ledger sorted")
         return {
             "doc_ids": [wizard_id],
             "doc_model": "general.ledger.report.wizard",
