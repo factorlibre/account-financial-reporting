@@ -5,6 +5,8 @@
 # Copyright 2022 Tecnativa - Víctor Martínez
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
+import concurrent
+
 from odoo import _, models
 
 
@@ -132,6 +134,7 @@ class GeneralLedgerXslx(models.AbstractModel):
 
     # flake8: noqa: C901
     def _generate_report_content(self, workbook, report, data, report_data):
+        print("Method _generate_report_content")
         res_data = self.env[
             "report.account_financial_report.general_ledger"
         ]._get_report_values(report, data)
@@ -142,20 +145,49 @@ class GeneralLedgerXslx(models.AbstractModel):
         analytic_data = res_data["analytic_data"]
         filter_partner_ids = res_data["filter_partner_ids"]
         foreign_currency = res_data["foreign_currency"]
-        # For each account
-        for account in general_ledger:
-            # Write account title
+
+        def update_line_with_additional_data(line, account_code):
+            line.update(
+                {
+                    "account": account_code,
+                    "journal": journals_data[line["journal_id"]]["code"],
+                }
+            )
+            if line["currency_id"]:
+                line.update(
+                    {
+                        "currency_name": line["currency_id"][1],
+                        "currency_id": line["currency_id"][0],
+                    }
+                )
+            if line["ref_label"] != "Centralized entries":
+                taxes_description = " ".join(
+                    taxes_data[tax_id]["tax_name"] for tax_id in line["tax_ids"]
+                )
+                if line["tax_line_id"]:
+                    taxes_description += line["tax_line_id"][1]
+                analytic_distribution = " ".join(
+                    f"{analytic_data[int(account_id)]['name']} {value}%"
+                    if value < 100
+                    else f"{analytic_data[int(account_id)]['name']}"
+                    for account_id, value in line["analytic_distribution"].items()
+                )
+                line.update(
+                    {
+                        "taxes_description": taxes_description,
+                        "analytic_distribution": analytic_distribution,
+                    }
+                )
+
+        def process_account(account):
             total_bal_curr = account["init_bal"].get("bal_curr", 0)
             self.write_array_title(
-                account["code"] + " - " + accounts_data[account["id"]]["name"],
+                f"{account['code']} - {accounts_data[account['id']]['name']}",
                 report_data,
             )
 
             if "list_grouped" not in account:
-                # Display array header for move lines
                 self.write_array_header(report_data)
-
-                # Display initial balance line for account
                 account.update(
                     {
                         "initial_debit": account["init_bal"]["debit"],
@@ -169,49 +201,13 @@ class GeneralLedgerXslx(models.AbstractModel):
                     )
                 self.write_initial_balance_from_dict(account, report_data)
 
-                # Display account move lines
                 for line in account["move_lines"]:
-                    line.update(
-                        {
-                            "account": account["code"],
-                            "journal": journals_data[line["journal_id"]]["code"],
-                        }
-                    )
-                    if line["currency_id"]:
-                        line.update(
-                            {
-                                "currency_name": line["currency_id"][1],
-                                "currency_id": line["currency_id"][0],
-                            }
-                        )
-                    if line["ref_label"] != "Centralized entries":
-                        taxes_description = ""
-                        analytic_distribution = ""
-                        for tax_id in line["tax_ids"]:
-                            taxes_description += taxes_data[tax_id]["tax_name"] + " "
-                        if line["tax_line_id"]:
-                            taxes_description += line["tax_line_id"][1]
-                        for account_id, value in line["analytic_distribution"].items():
-                            if value < 100:
-                                analytic_distribution += "%s %d%% " % (
-                                    analytic_data[int(account_id)]["name"],
-                                    value,
-                                )
-                            else:
-                                analytic_distribution += (
-                                    "%s " % analytic_data[int(account_id)]["name"]
-                                )
-                        line.update(
-                            {
-                                "taxes_description": taxes_description,
-                                "analytic_distribution": analytic_distribution,
-                            }
-                        )
+                    update_line_with_additional_data(line, account["code"])
                     if foreign_currency:
                         total_bal_curr += line["bal_curr"]
                         line.update({"total_bal_curr": total_bal_curr})
                     self.write_line_from_dict(line, report_data)
-                # Display ending balance line for account
+
                 account.update(
                     {
                         "final_debit": account["fin_bal"]["debit"],
@@ -220,23 +216,13 @@ class GeneralLedgerXslx(models.AbstractModel):
                     }
                 )
                 if foreign_currency:
-                    account.update(
-                        {
-                            "final_bal_curr": account["fin_bal"]["bal_curr"],
-                        }
-                    )
+                    account.update({"final_bal_curr": account["fin_bal"]["bal_curr"]})
                 self.write_ending_balance_from_dict(account, report_data)
-
             else:
-                # For each partner
                 total_bal_curr = 0
                 for group_item in account["list_grouped"]:
-                    # Write partner title
                     self.write_array_title(group_item["name"], report_data)
-
-                    # Display array header for move lines
                     self.write_array_header(report_data)
-
                     account.update(
                         {
                             "currency_id": accounts_data[account["id"]]["currency_id"],
@@ -245,17 +231,13 @@ class GeneralLedgerXslx(models.AbstractModel):
                             ],
                         }
                     )
-
-                    # Display initial balance line for partner
                     group_item.update(
                         {
                             "initial_debit": group_item["init_bal"]["debit"],
                             "initial_credit": group_item["init_bal"]["credit"],
                             "initial_balance": group_item["init_bal"]["balance"],
                             "type": "partner",
-                            "grouped_by": account["grouped_by"]
-                            if "grouped_by" in account
-                            else "",
+                            "grouped_by": account.get("grouped_by", ""),
                             "currency_id": accounts_data[account["id"]]["currency_id"],
                             "currency_name": accounts_data[account["id"]][
                                 "currency_name"
@@ -264,58 +246,17 @@ class GeneralLedgerXslx(models.AbstractModel):
                     )
                     if foreign_currency:
                         group_item.update(
-                            {
-                                "initial_bal_curr": group_item["init_bal"]["bal_curr"],
-                            }
+                            {"initial_bal_curr": group_item["init_bal"]["bal_curr"]}
                         )
                     self.write_initial_balance_from_dict(group_item, report_data)
 
-                    # Display account move lines
                     for line in group_item["move_lines"]:
-                        line.update(
-                            {
-                                "account": account["code"],
-                                "journal": journals_data[line["journal_id"]]["code"],
-                            }
-                        )
-                        if line["currency_id"]:
-                            line.update(
-                                {
-                                    "currency_name": line["currency_id"][1],
-                                    "currency_id": line["currency_id"][0],
-                                }
-                            )
-                        if line["ref_label"] != "Centralized entries":
-                            taxes_description = ""
-                            analytic_distribution = ""
-                            for tax_id in line["tax_ids"]:
-                                taxes_description += (
-                                    taxes_data[tax_id]["tax_name"] + " "
-                                )
-                            for account_id, value in line[
-                                "analytic_distribution"
-                            ].items():
-                                if value < 100:
-                                    analytic_distribution += "%s %d%% " % (
-                                        analytic_data[int(account_id)]["name"],
-                                        value,
-                                    )
-                                else:
-                                    analytic_distribution += (
-                                        "%s " % analytic_data[int(account_id)]["name"]
-                                    )
-                            line.update(
-                                {
-                                    "taxes_description": taxes_description,
-                                    "analytic_distribution": analytic_distribution,
-                                }
-                            )
+                        update_line_with_additional_data(line, account["code"])
                         if foreign_currency:
                             total_bal_curr += line["bal_curr"]
                             line.update({"total_bal_curr": total_bal_curr})
                         self.write_line_from_dict(line, report_data)
 
-                    # Display ending balance line for partner
                     group_item.update(
                         {
                             "final_debit": group_item["fin_bal"]["debit"],
@@ -325,13 +266,9 @@ class GeneralLedgerXslx(models.AbstractModel):
                     )
                     if foreign_currency and group_item["currency_id"]:
                         group_item.update(
-                            {
-                                "final_bal_curr": group_item["fin_bal"]["bal_curr"],
-                            }
+                            {"final_bal_curr": group_item["fin_bal"]["bal_curr"]}
                         )
                     self.write_ending_balance_from_dict(group_item, report_data)
-
-                    # Line break
                     report_data["row_pos"] += 1
 
                 if not filter_partner_ids:
@@ -344,14 +281,246 @@ class GeneralLedgerXslx(models.AbstractModel):
                     )
                     if foreign_currency and account["currency_id"]:
                         account.update(
-                            {
-                                "final_bal_curr": account["fin_bal"]["bal_curr"],
-                            }
+                            {"final_bal_curr": account["fin_bal"]["bal_curr"]}
                         )
                     self.write_ending_balance_from_dict(account, report_data)
 
-            # 2 lines break
             report_data["row_pos"] += 2
+
+        print("Almost fully executed")
+        # Here is reaching server limit
+        # for account in general_ledger:
+        #     process_account(account)
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(process_account, account) for account in general_ledger
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+        print("Method _generate_report_content fully executed")
+
+    # def _generate_report_content(self, workbook, report, data, report_data):
+    #     res_data = self.env[
+    #         "report.account_financial_report.general_ledger"
+    #     ]._get_report_values(report, data)
+    #     general_ledger = res_data["general_ledger"]
+    #     accounts_data = res_data["accounts_data"]
+    #     journals_data = res_data["journals_data"]
+    #     taxes_data = res_data["taxes_data"]
+    #     analytic_data = res_data["analytic_data"]
+    #     filter_partner_ids = res_data["filter_partner_ids"]
+    #     foreign_currency = res_data["foreign_currency"]
+    #     # For each account
+    #     for account in general_ledger:
+    #         # Write account title
+    #         total_bal_curr = account["init_bal"].get("bal_curr", 0)
+    #         self.write_array_title(
+    #             account["code"] + " - " + accounts_data[account["id"]]["name"],
+    #             report_data,
+    #         )
+
+    #         if "list_grouped" not in account:
+    #             # Display array header for move lines
+    #             self.write_array_header(report_data)
+
+    #             # Display initial balance line for account
+    #             account.update(
+    #                 {
+    #                     "initial_debit": account["init_bal"]["debit"],
+    #                     "initial_credit": account["init_bal"]["credit"],
+    #                     "initial_balance": account["init_bal"]["balance"],
+    #                 }
+    #             )
+    #             if foreign_currency:
+    #                 account.update(
+    #                     {"initial_bal_curr": account["init_bal"]["bal_curr"]}
+    #                 )
+    #             self.write_initial_balance_from_dict(account, report_data)
+
+    #             # Display account move lines
+    #             for line in account["move_lines"]:
+    #                 line.update(
+    #                     {
+    #                         "account": account["code"],
+    #                         "journal": journals_data[line["journal_id"]]["code"],
+    #                     }
+    #                 )
+    #                 if line["currency_id"]:
+    #                     line.update(
+    #                         {
+    #                             "currency_name": line["currency_id"][1],
+    #                             "currency_id": line["currency_id"][0],
+    #                         }
+    #                     )
+    #                 if line["ref_label"] != "Centralized entries":
+    #                     taxes_description = ""
+    #                     analytic_distribution = ""
+    #                     for tax_id in line["tax_ids"]:
+    #                         taxes_description += taxes_data[tax_id]["tax_name"] + " "
+    #                     if line["tax_line_id"]:
+    #                         taxes_description += line["tax_line_id"][1]
+    #                     for account_id, value in line["analytic_distribution"].items():
+    #                         if value < 100:
+    #                             analytic_distribution += "%s %d%% " % (
+    #                                 analytic_data[int(account_id)]["name"],
+    #                                 value,
+    #                             )
+    #                         else:
+    #                             analytic_distribution += (
+    #                                 "%s " % analytic_data[int(account_id)]["name"]
+    #                             )
+    #                     line.update(
+    #                         {
+    #                             "taxes_description": taxes_description,
+    #                             "analytic_distribution": analytic_distribution,
+    #                         }
+    #                     )
+    #                 if foreign_currency:
+    #                     total_bal_curr += line["bal_curr"]
+    #                     line.update({"total_bal_curr": total_bal_curr})
+    #                 self.write_line_from_dict(line, report_data)
+    #             # Display ending balance line for account
+    #             account.update(
+    #                 {
+    #                     "final_debit": account["fin_bal"]["debit"],
+    #                     "final_credit": account["fin_bal"]["credit"],
+    #                     "final_balance": account["fin_bal"]["balance"],
+    #                 }
+    #             )
+    #             if foreign_currency:
+    #                 account.update(
+    #                     {
+    #                         "final_bal_curr": account["fin_bal"]["bal_curr"],
+    #                     }
+    #                 )
+    #             self.write_ending_balance_from_dict(account, report_data)
+
+    #         else:
+    #             # For each partner
+    #             total_bal_curr = 0
+    #             for group_item in account["list_grouped"]:
+    #                 # Write partner title
+    #                 self.write_array_title(group_item["name"], report_data)
+
+    #                 # Display array header for move lines
+    #                 self.write_array_header(report_data)
+
+    #                 account.update(
+    #                     {
+    #                         "currency_id": accounts_data[account["id"]]["currency_id"],
+    #                         "currency_name": accounts_data[account["id"]][
+    #                             "currency_name"
+    #                         ],
+    #                     }
+    #                 )
+
+    #                 # Display initial balance line for partner
+    #                 group_item.update(
+    #                     {
+    #                         "initial_debit": group_item["init_bal"]["debit"],
+    #                         "initial_credit": group_item["init_bal"]["credit"],
+    #                         "initial_balance": group_item["init_bal"]["balance"],
+    #                         "type": "partner",
+    #                         "grouped_by": account["grouped_by"]
+    #                         if "grouped_by" in account
+    #                         else "",
+    #                         "currency_id": accounts_data[account["id"]]["currency_id"],
+    #                         "currency_name": accounts_data[account["id"]][
+    #                             "currency_name"
+    #                         ],
+    #                     }
+    #                 )
+    #                 if foreign_currency:
+    #                     group_item.update(
+    #                         {
+    #                             "initial_bal_curr": group_item["init_bal"]["bal_curr"],
+    #                         }
+    #                     )
+    #                 self.write_initial_balance_from_dict(group_item, report_data)
+
+    #                 # Display account move lines
+    #                 for line in group_item["move_lines"]:
+    #                     line.update(
+    #                         {
+    #                             "account": account["code"],
+    #                             "journal": journals_data[line["journal_id"]]["code"],
+    #                         }
+    #                     )
+    #                     if line["currency_id"]:
+    #                         line.update(
+    #                             {
+    #                                 "currency_name": line["currency_id"][1],
+    #                                 "currency_id": line["currency_id"][0],
+    #                             }
+    #                         )
+    #                     if line["ref_label"] != "Centralized entries":
+    #                         taxes_description = ""
+    #                         analytic_distribution = ""
+    #                         for tax_id in line["tax_ids"]:
+    #                             taxes_description += (
+    #                                 taxes_data[tax_id]["tax_name"] + " "
+    #                             )
+    #                         for account_id, value in line[
+    #                             "analytic_distribution"
+    #                         ].items():
+    #                             if value < 100:
+    #                                 analytic_distribution += "%s %d%% " % (
+    #                                     analytic_data[int(account_id)]["name"],
+    #                                     value,
+    #                                 )
+    #                             else:
+    #                                 analytic_distribution += (
+    #                                     "%s " % analytic_data[int(account_id)]["name"]
+    #                                 )
+    #                         line.update(
+    #                             {
+    #                                 "taxes_description": taxes_description,
+    #                                 "analytic_distribution": analytic_distribution,
+    #                             }
+    #                         )
+    #                     if foreign_currency:
+    #                         total_bal_curr += line["bal_curr"]
+    #                         line.update({"total_bal_curr": total_bal_curr})
+    #                     self.write_line_from_dict(line, report_data)
+
+    #                 # Display ending balance line for partner
+    #                 group_item.update(
+    #                     {
+    #                         "final_debit": group_item["fin_bal"]["debit"],
+    #                         "final_credit": group_item["fin_bal"]["credit"],
+    #                         "final_balance": group_item["fin_bal"]["balance"],
+    #                     }
+    #                 )
+    #                 if foreign_currency and group_item["currency_id"]:
+    #                     group_item.update(
+    #                         {
+    #                             "final_bal_curr": group_item["fin_bal"]["bal_curr"],
+    #                         }
+    #                     )
+    #                 self.write_ending_balance_from_dict(group_item, report_data)
+
+    #                 # Line break
+    #                 report_data["row_pos"] += 1
+
+    #             if not filter_partner_ids:
+    #                 account.update(
+    #                     {
+    #                         "final_debit": account["fin_bal"]["debit"],
+    #                         "final_credit": account["fin_bal"]["credit"],
+    #                         "final_balance": account["fin_bal"]["balance"],
+    #                     }
+    #                 )
+    #                 if foreign_currency and account["currency_id"]:
+    #                     account.update(
+    #                         {
+    #                             "final_bal_curr": account["fin_bal"]["bal_curr"],
+    #                         }
+    #                     )
+    #                 self.write_ending_balance_from_dict(account, report_data)
+
+    #         # 2 lines break
+    #         report_data["row_pos"] += 2
 
     def write_initial_balance_from_dict(self, my_object, report_data):
         """Specific function to write initial balance for General Ledger"""
