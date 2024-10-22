@@ -2,11 +2,12 @@
 # Copyright 2020 ForgeFlow S.L. (https://www.forgeflow.com)
 # Copyright 2022 Tecnativa - Víctor Martínez
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
-
+import gc
 import calendar
 import datetime
 import operator
 
+import odoo
 from odoo import _, api, models
 from odoo.tools import float_is_zero
 
@@ -459,15 +460,98 @@ class GeneralLedgerReport(models.AbstractModel):
         if extra_domain:
             domain += extra_domain
         ml_fields = self._get_ml_fields()
-        move_lines = self.env["account.move.line"].search_read(
-            domain=domain, fields=ml_fields, order="date,move_name"
-        )
+
         journal_ids = set()
         full_reconcile_ids = set()
         taxes_ids = set()
         analytic_ids = set()
         full_reconcile_data = {}
         acc_prt_account_ids = self._get_acc_prt_accounts_ids(company_id, grouped_by)
+        self._ml_data_process_in_batches(
+            domain,
+            ml_fields,
+            gen_ld_data,
+            journal_ids,
+            full_reconcile_ids,
+            taxes_ids,
+            analytic_ids,
+            full_reconcile_data,
+            acc_prt_account_ids,
+            grouped_by,
+            foreign_currency,
+            limit=10000,
+        )
+        journals_data = self._get_journals_data(list(journal_ids))
+        accounts_data = self._get_accounts_data(gen_ld_data.keys())
+        taxes_data = self._get_taxes_data(list(taxes_ids))
+        analytic_data = self._get_analytic_data(list(analytic_ids))
+        rec_after_date_to_ids = self._get_reconciled_after_date_to_ids(
+            full_reconcile_data.keys(), date_to
+        )
+        return (
+            gen_ld_data,
+            accounts_data,
+            journals_data,
+            full_reconcile_data,
+            taxes_data,
+            analytic_data,
+            rec_after_date_to_ids,
+        )
+
+    def _ml_data_process_in_batches(
+        self,
+        domain,
+        ml_fields,
+        gen_ld_data,
+        journal_ids,
+        full_reconcile_ids,
+        taxes_ids,
+        analytic_ids,
+        full_reconcile_data,
+        acc_prt_account_ids,
+        grouped_by,
+        foreign_currency,
+        limit=10000,
+    ):
+        registry = odoo.registry(self.env.cr.dbname)
+        move_lines = True
+        offset = 0
+        while move_lines:
+            with registry.cursor() as cr:
+                env = odoo.api.Environment(cr, self._uid, self._context)
+                move_lines = env["account.move.line"].search_read(
+                    domain=domain, fields=ml_fields, order="date,move_name",
+                    limit=limit, offset=offset,
+                )
+                if move_lines:
+                    self._ml_data_process_move_lines(
+                        move_lines,
+                        gen_ld_data,
+                        journal_ids,
+                        full_reconcile_ids,
+                        taxes_ids,
+                        analytic_ids,
+                        full_reconcile_data,
+                        acc_prt_account_ids,
+                        grouped_by,
+                        foreign_currency
+                    )
+                offset += limit
+            gc.collect()
+
+    def _ml_data_process_move_lines(
+        self,
+        move_lines,
+        gen_ld_data,
+        journal_ids,
+        full_reconcile_ids,
+        taxes_ids,
+        analytic_ids,
+        full_reconcile_data,
+        acc_prt_account_ids,
+        grouped_by,
+        foreign_currency
+    ):
         for move_line in move_lines:
             journal_ids.add(move_line["journal_id"][0])
             for tax_id in move_line["tax_ids"]:
@@ -531,22 +615,6 @@ class GeneralLedgerReport(models.AbstractModel):
                 gen_ld_data[acc_id]["fin_bal"]["bal_curr"] += move_line[
                     "amount_currency"
                 ]
-        journals_data = self._get_journals_data(list(journal_ids))
-        accounts_data = self._get_accounts_data(gen_ld_data.keys())
-        taxes_data = self._get_taxes_data(list(taxes_ids))
-        analytic_data = self._get_analytic_data(list(analytic_ids))
-        rec_after_date_to_ids = self._get_reconciled_after_date_to_ids(
-            full_reconcile_data.keys(), date_to
-        )
-        return (
-            gen_ld_data,
-            accounts_data,
-            journals_data,
-            full_reconcile_data,
-            taxes_data,
-            analytic_data,
-            rec_after_date_to_ids,
-        )
 
     @api.model
     def _recalculate_cumul_balance(
