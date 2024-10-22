@@ -6,7 +6,6 @@
 import calendar
 import datetime
 import operator
-from collections import namedtuple
 
 from odoo import _, api, models
 from odoo.tools import float_is_zero
@@ -311,30 +310,34 @@ class GeneralLedgerReport(models.AbstractModel):
     @api.model
     def _get_move_line_data(self, move_line):
         move_line_data = {
-            "id": move_line.id,
-            "date": move_line.date,
-            "entry": move_line.move_name,
-            "entry_id": move_line.move_id[0],
-            "journal_id": move_line.journal_id[0],
-            "account_id": move_line.account_id[0],
-            "partner_id": move_line.partner_id[0] if move_line.partner_id else False,
-            "partner_name": move_line.partner_id[1] if move_line.partner_id else "",
-            "ref": "" if not move_line.ref else move_line.ref,
-            "name": "" if not move_line.name else move_line.name,
-            "tax_ids": move_line.tax_ids,
-            "tax_line_id": move_line.tax_line_id,
-            "debit": move_line.debit,
-            "credit": move_line.credit,
-            "balance": move_line.balance,
-            "bal_curr": move_line.amount_currency,
-            "rec_id": move_line.full_reconcile_id[0]
-            if move_line.full_reconcile_id
+            "id": move_line["id"],
+            "date": move_line["date"],
+            "entry": move_line["move_name"],
+            "entry_id": move_line["move_id"][0],
+            "journal_id": move_line["journal_id"][0],
+            "account_id": move_line["account_id"][0],
+            "partner_id": move_line["partner_id"][0]
+            if move_line["partner_id"]
             else False,
-            "rec_name": move_line.full_reconcile_id[1]
-            if move_line.full_reconcile_id
+            "partner_name": move_line["partner_id"][1]
+            if move_line["partner_id"]
             else "",
-            "currency_id": move_line.currency_id,
-            "analytic_distribution": move_line.analytic_distribution or {},
+            "ref": "" if not move_line["ref"] else move_line["ref"],
+            "name": "" if not move_line["name"] else move_line["name"],
+            "tax_ids": move_line["tax_ids"],
+            "tax_line_id": move_line["tax_line_id"],
+            "debit": move_line["debit"],
+            "credit": move_line["credit"],
+            "balance": move_line["balance"],
+            "bal_curr": move_line["amount_currency"],
+            "rec_id": move_line["full_reconcile_id"][0]
+            if move_line["full_reconcile_id"]
+            else False,
+            "rec_name": move_line["full_reconcile_id"][1]
+            if move_line["full_reconcile_id"]
+            else "",
+            "currency_id": move_line["currency_id"],
+            "analytic_distribution": move_line["analytic_distribution"] or {},
         }
         if (
             move_line_data["ref"] == move_line_data["name"]
@@ -408,20 +411,20 @@ class GeneralLedgerReport(models.AbstractModel):
     def _prepare_ml_items(self, move_line, grouped_by):
         res = []
         if grouped_by == "partners":
-            item_id = move_line.partner_id[0] if move_line.partner_id else 0
+            item_id = move_line["partner_id"][0] if move_line["partner_id"] else 0
             item_name = (
-                move_line.partner_id[1]
-                if move_line.partner_id
+                move_line["partner_id"][1]
+                if move_line["partner_id"]
                 else _("Missing Partner")
             )
             res.append({"id": item_id, "name": item_name})
         elif grouped_by == "taxes":
-            if move_line.tax_line_id:
-                item_id = move_line.tax_line_id[0]
-                item_name = move_line.tax_line_id[1]
+            if move_line["tax_line_id"]:
+                item_id = move_line["tax_line_id"][0]
+                item_name = move_line["tax_line_id"][1]
                 res.append({"id": item_id, "name": item_name})
-            elif move_line.tax_ids:
-                for tax_id in move_line.tax_ids:
+            elif move_line["tax_ids"]:
+                for tax_id in move_line["tax_ids"]:
                     tax_item = self.env["account.tax"].browse(tax_id)
                     res.append({"id": tax_item.id, "name": tax_item.name})
             else:
@@ -459,8 +462,6 @@ class GeneralLedgerReport(models.AbstractModel):
         move_lines = self.env["account.move.line"].search_read(
             domain=domain, fields=ml_fields, order="date,move_name"
         )
-        MoveLine = namedtuple("MoveLine", ml_fields)
-        move_lines = [MoveLine(**line) for line in move_lines]
         journal_ids = set()
         full_reconcile_ids = set()
         taxes_ids = set()
@@ -468,27 +469,29 @@ class GeneralLedgerReport(models.AbstractModel):
         full_reconcile_data = {}
         acc_prt_account_ids = self._get_acc_prt_accounts_ids(company_id, grouped_by)
         for move_line in move_lines:
-            journal_ids.add(move_line.journal_id[0])
-            for tax_id in move_line.tax_ids:
+            journal_ids.add(move_line["journal_id"][0])
+            for tax_id in move_line["tax_ids"]:
                 taxes_ids.add(tax_id)
-            for analytic_account in move_line.analytic_distribution or {}:
+            for analytic_account in move_line["analytic_distribution"] or {}:
                 analytic_ids.add(int(analytic_account))
-            if move_line.full_reconcile_id:
-                rec_id = move_line.full_reconcile_id[0]
+            if move_line["full_reconcile_id"]:
+                rec_id = move_line["full_reconcile_id"][0]
                 if rec_id not in full_reconcile_ids:
-                    full_reconcile_data[rec_id] = {
-                        "id": rec_id,
-                        "name": move_line.full_reconcile_id[1],
-                    }
+                    full_reconcile_data.update(
+                        {
+                            rec_id: {
+                                "id": rec_id,
+                                "name": move_line["full_reconcile_id"][1],
+                            }
+                        }
+                    )
                     full_reconcile_ids.add(rec_id)
-
-            acc_id = move_line.account_id[0]
-            ml_id = move_line.id
-
+            acc_id = move_line["account_id"][0]
+            ml_id = move_line["id"]
             if acc_id not in gen_ld_data.keys():
                 gen_ld_data[acc_id] = self._initialize_data(foreign_currency)
                 gen_ld_data[acc_id]["id"] = acc_id
-                gen_ld_data[acc_id]["mame"] = move_line.account_id[1]
+                gen_ld_data[acc_id]["mame"] = move_line["account_id"][1]
                 if grouped_by:
                     gen_ld_data[acc_id][grouped_by] = False
             if acc_id in acc_prt_account_ids:
@@ -506,24 +509,28 @@ class GeneralLedgerReport(models.AbstractModel):
                     gen_ld_data[acc_id][item_id][ml_id] = self._get_move_line_data(
                         move_line
                     )
-                    gen_ld_data[acc_id][item_id]["fin_bal"][
+                    gen_ld_data[acc_id][item_id]["fin_bal"]["credit"] += move_line[
                         "credit"
-                    ] += move_line.credit
-                    gen_ld_data[acc_id][item_id]["fin_bal"]["debit"] += move_line.debit
-                    gen_ld_data[acc_id][item_id]["fin_bal"][
+                    ]
+                    gen_ld_data[acc_id][item_id]["fin_bal"]["debit"] += move_line[
+                        "debit"
+                    ]
+                    gen_ld_data[acc_id][item_id]["fin_bal"]["balance"] += move_line[
                         "balance"
-                    ] += move_line.balance
+                    ]
                     if foreign_currency:
                         gen_ld_data[acc_id][item_id]["fin_bal"][
                             "bal_curr"
-                        ] += move_line.amount_currency
+                        ] += move_line["amount_currency"]
             else:
                 gen_ld_data[acc_id][ml_id] = self._get_move_line_data(move_line)
-            gen_ld_data[acc_id]["fin_bal"]["credit"] += move_line.credit
-            gen_ld_data[acc_id]["fin_bal"]["debit"] += move_line.debit
-            gen_ld_data[acc_id]["fin_bal"]["balance"] += move_line.balance
+            gen_ld_data[acc_id]["fin_bal"]["credit"] += move_line["credit"]
+            gen_ld_data[acc_id]["fin_bal"]["debit"] += move_line["debit"]
+            gen_ld_data[acc_id]["fin_bal"]["balance"] += move_line["balance"]
             if foreign_currency:
-                gen_ld_data[acc_id]["fin_bal"]["bal_curr"] += move_line.amount_currency
+                gen_ld_data[acc_id]["fin_bal"]["bal_curr"] += move_line[
+                    "amount_currency"
+                ]
         journals_data = self._get_journals_data(list(journal_ids))
         accounts_data = self._get_accounts_data(gen_ld_data.keys())
         taxes_data = self._get_taxes_data(list(taxes_ids))
