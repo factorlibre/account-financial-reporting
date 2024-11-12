@@ -152,80 +152,29 @@ class GeneralLedgerXslx(models.AbstractModel):
                 report_data,
             )
             if "list_grouped" not in account:
-                # Display array header for move lines
-                self.write_array_header(report_data)
-                # Display initial balance line for account
-                self._update_initial_balance(
+                self._process_account(
+                    report_data,
                     account,
                     foreign_currency,
                     accounts_data,
-                    account["currency_id"],
-                    report_data,
-                    list_grouped=False,
-                    account=None,
-                )
-                # Display account move lines
-                self._process_move_line(
-                    account["move_lines"],
-                    account["code"],
                     journals_data,
                     company_currency,
                     taxes_data,
                     analytic_data,
-                    foreign_currency,
-                    report_data,
                     total_bal_curr,
-                    list_grouped=False,
                 )
-                # Display ending balance line for account
-                self._update_final_balance(account, foreign_currency, report_data)
             else:
-                # For each partner
-                total_bal_curr = 0
-                for group_item in account["list_grouped"]:
-                    # Write partner title
-                    self.write_array_title(group_item["name"], report_data)
-                    # Display array header for move lines
-                    self.write_array_header(report_data)
-                    account.update(
-                        {
-                            "currency_id": accounts_data[account["id"]]["currency_id"],
-                            "currency_name": accounts_data[account["id"]][
-                                "currency_name"
-                            ],
-                        }
-                    )
-                    # Display initial balance line for partner
-                    self._update_initial_balance(
-                        group_item,
-                        foreign_currency,
-                        accounts_data,
-                        account["currency_id"],
-                        report_data,
-                        list_grouped=True,
-                        account=account,
-                    )
-                    # Display account move lines
-                    self._process_move_line(
-                        group_item["move_lines"],
-                        account["code"],
-                        journals_data,
-                        company_currency,
-                        taxes_data,
-                        analytic_data,
-                        foreign_currency,
-                        report_data,
-                        total_bal_curr,
-                        list_grouped=True,
-                    )
-                    # Display ending balance line for partner
-                    self._update_final_balance(
-                        group_item, foreign_currency, report_data
-                    )
-                    # Line break
-                    report_data["row_pos"] += 1
-                if not filter_partner_ids:
-                    self._update_final_balance(account, foreign_currency, report_data)
+                self._process_account_list_grouped(
+                    account,
+                    report_data,
+                    accounts_data,
+                    foreign_currency,
+                    journals_data,
+                    company_currency,
+                    taxes_data,
+                    analytic_data,
+                    filter_partner_ids,
+                )
             # 2 lines break
             report_data["row_pos"] += 2
 
@@ -288,6 +237,127 @@ class GeneralLedgerXslx(models.AbstractModel):
                 total_bal_curr += line["bal_curr"]
                 line.update({"total_bal_curr": total_bal_curr})
             self.write_line_from_dict(line, report_data)
+
+    def _process_account(
+        self,
+        report_data,
+        account,
+        foreign_currency,
+        accounts_data,
+        journals_data,
+        company_currency,
+        taxes_data,
+        analytic_data,
+        total_bal_curr,
+    ):
+        # Display array header for move lines
+        self.write_array_header(report_data)
+        # Display initial balance line for account
+        self._update_initial_balance(
+            account,
+            foreign_currency,
+            accounts_data,
+            account["currency_id"],
+            report_data,
+            list_grouped=False,
+            account=None,
+        )
+        # Display account move lines
+        self._process_move_line(
+            account["move_lines"],
+            account["code"],
+            journals_data,
+            company_currency,
+            taxes_data,
+            analytic_data,
+            foreign_currency,
+            report_data,
+            total_bal_curr,
+            list_grouped=False,
+        )
+        # Display ending balance line for account
+        self._update_final_balance(account, foreign_currency, report_data)
+
+    def _process_group_item(
+        self,
+        group_item,
+        report_data,
+        account,
+        accounts_data,
+        foreign_currency,
+        journals_data,
+        company_currency,
+        taxes_data,
+        analytic_data,
+        total_bal_curr,
+    ):
+        # Write partner title
+        self.write_array_title(group_item["name"], report_data)
+        # Display array header for move lines
+        self.write_array_header(report_data)
+        account.update(
+            {
+                "currency_id": accounts_data[account["id"]]["currency_id"],
+                "currency_name": accounts_data[account["id"]]["currency_name"],
+            }
+        )
+        # Display initial balance line for partner
+        self._update_initial_balance(
+            group_item,
+            foreign_currency,
+            accounts_data,
+            account["currency_id"],
+            report_data,
+            list_grouped=True,
+            account=account,
+        )
+        # Display account move lines
+        self._process_move_line(
+            group_item["move_lines"],
+            account["code"],
+            journals_data,
+            company_currency,
+            taxes_data,
+            analytic_data,
+            foreign_currency,
+            report_data,
+            total_bal_curr,
+            list_grouped=True,
+        )
+        # Display ending balance line for partner
+        self._update_final_balance(group_item, foreign_currency, report_data)
+        # Line break
+        report_data["row_pos"] += 1
+
+    def _process_account_list_grouped(
+        self,
+        account,
+        report_data,
+        accounts_data,
+        foreign_currency,
+        journals_data,
+        company_currency,
+        taxes_data,
+        analytic_data,
+        filter_partner_ids,
+    ):
+        # For each partner
+        total_bal_curr = 0
+        for group_item in account["list_grouped"]:
+            self._process_group_item(
+                group_item,
+                report_data,
+                account,
+                accounts_data,
+                foreign_currency,
+                journals_data,
+                company_currency,
+                taxes_data,
+                analytic_data,
+                total_bal_curr,
+            )
+        if not filter_partner_ids:
+            self._update_final_balance(account, foreign_currency, report_data)
 
     def _update_final_balance(self, obj, foreign_currency, report_data):
         obj.update(
