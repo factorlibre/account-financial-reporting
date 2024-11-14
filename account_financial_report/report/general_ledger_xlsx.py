@@ -5,6 +5,7 @@
 # Copyright 2022 Tecnativa - Víctor Martínez
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
+import gc
 from odoo import _, models
 
 
@@ -191,52 +192,56 @@ class GeneralLedgerXslx(models.AbstractModel):
         total_bal_curr,
         list_grouped=False,
     ):
-        for line in move_lines:
-            line.update(
-                {
-                    "account": account_code,
-                    "journal": journals_data[line["journal_id"]]["code"],
-                }
-            )
-            line_currency_id = line["currency_id"][0] if line["currency_id"] else False
-            if line_currency_id and line_currency_id != company_currency.id:
+        limit = 10000
+        for i in range(0, len(move_lines), limit):
+            batch_lines = move_lines[i : i + limit]
+            for line in batch_lines:
                 line.update(
                     {
-                        "currency_name": line["currency_id"][1],
-                        "currency_id": line["currency_id"][0],
+                        "account": account_code,
+                        "journal": journals_data[line["journal_id"]]["code"],
                     }
                 )
-            if line["ref_label"] != "Centralized entries":
-                taxes_description = ""
-                analytic_distribution = ""
-                for tax_id in line["tax_ids"]:
-                    taxes_description += taxes_data[tax_id]["tax_name"] + " "
-                if not list_grouped and line["tax_line_id"]:
-                    taxes_description += line["tax_line_id"][1]
-                for account_id, value in line["analytic_distribution"].items():
-                    if value < 100:
-                        analytic_distribution += "%s %d%% " % (
-                            analytic_data[int(account_id)]["name"],
-                            value,
-                        )
-                    else:
-                        analytic_distribution += (
-                            "%s " % analytic_data[int(account_id)]["name"]
-                        )
-                line.update(
-                    {
-                        "taxes_description": taxes_description,
-                        "analytic_distribution": analytic_distribution,
-                    }
-                )
-            if (
-                foreign_currency
-                and line_currency_id
-                and line_currency_id != company_currency.id
-            ):
-                total_bal_curr += line["bal_curr"]
-                line.update({"total_bal_curr": total_bal_curr})
-            self.write_line_from_dict(line, report_data)
+                line_currency_id = line["currency_id"][0] if line["currency_id"] else False
+                if line_currency_id and line_currency_id != company_currency.id:
+                    line.update(
+                        {
+                            "currency_name": line["currency_id"][1],
+                            "currency_id": line["currency_id"][0],
+                        }
+                    )
+                if line["ref_label"] != "Centralized entries":
+                    taxes_description = ""
+                    analytic_distribution = ""
+                    for tax_id in line["tax_ids"]:
+                        taxes_description += taxes_data[tax_id]["tax_name"] + " "
+                    if not list_grouped and line["tax_line_id"]:
+                        taxes_description += line["tax_line_id"][1]
+                    for account_id, value in line["analytic_distribution"].items():
+                        if value < 100:
+                            analytic_distribution += "%s %d%% " % (
+                                analytic_data[int(account_id)]["name"],
+                                value,
+                            )
+                        else:
+                            analytic_distribution += (
+                                "%s " % analytic_data[int(account_id)]["name"]
+                            )
+                    line.update(
+                        {
+                            "taxes_description": taxes_description,
+                            "analytic_distribution": analytic_distribution,
+                        }
+                    )
+                if (
+                    foreign_currency
+                    and line_currency_id
+                    and line_currency_id != company_currency.id
+                ):
+                    total_bal_curr += line["bal_curr"]
+                    line.update({"total_bal_curr": total_bal_curr})
+                self.write_line_from_dict(line, report_data)
+            gc.collect()
 
     def _process_account(
         self,
