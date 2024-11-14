@@ -179,7 +179,7 @@ class GeneralLedgerXslx(models.AbstractModel):
             # 2 lines break
             report_data["row_pos"] += 2
 
-    def _process_move_line(
+    def _process_move_lines(
         self,
         move_lines,
         account_code,
@@ -194,8 +194,8 @@ class GeneralLedgerXslx(models.AbstractModel):
     ):
         limit = 10000
         for i in range(0, len(move_lines), limit):
-            batch_lines = move_lines[i : i + limit]
-            for line in batch_lines:
+            batch = move_lines[i:i + limit]
+            for line in batch:
                 line.update(
                     {
                         "account": account_code,
@@ -241,7 +241,9 @@ class GeneralLedgerXslx(models.AbstractModel):
                     total_bal_curr += line["bal_curr"]
                     line.update({"total_bal_curr": total_bal_curr})
                 self.write_line_from_dict(line, report_data)
+                line = None
             gc.collect()
+            batch.clear()
 
     def _process_account(
         self,
@@ -268,7 +270,7 @@ class GeneralLedgerXslx(models.AbstractModel):
             account=None,
         )
         # Display account move lines
-        self._process_move_line(
+        self._process_move_lines(
             account["move_lines"],
             account["code"],
             journals_data,
@@ -317,7 +319,7 @@ class GeneralLedgerXslx(models.AbstractModel):
             account=account,
         )
         # Display account move lines
-        self._process_move_line(
+        self._process_move_lines(
             group_item["move_lines"],
             account["code"],
             journals_data,
