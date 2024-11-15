@@ -192,7 +192,7 @@ class GeneralLedgerXslx(models.AbstractModel):
         total_bal_curr,
         list_grouped=False,
     ):
-        limit = 10000
+        limit = 5000  # Reduce batch size to limit memory usage
         for i in range(0, len(move_lines), limit):
             batch = move_lines[i:i + limit]
             for line in batch:
@@ -241,9 +241,8 @@ class GeneralLedgerXslx(models.AbstractModel):
                     total_bal_curr += line["bal_curr"]
                     line.update({"total_bal_curr": total_bal_curr})
                 self.write_line_from_dict(line, report_data)
-                line = None
-            gc.collect()
-            batch.clear()
+            del batch[:]  # Clear the batch list to free memory
+            gc.collect()  # Explicitly call garbage collector
 
     def _process_account(
         self,
