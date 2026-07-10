@@ -3,6 +3,13 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
 from odoo import api, models
+from odoo.tools import split_every
+
+# Default batch size for chunked move-line processing.
+DEFAULT_REPORT_CHUNK = 2000
+# Floor: a misconfigured chunk size (e.g. 1) must not degrade the report into
+# one query per line. The batch size is clamped to at least this value.
+MIN_REPORT_CHUNK = 100
 
 
 class AgedPartnerBalanceReport(models.AbstractModel):
@@ -161,6 +168,49 @@ class AgedPartnerBalanceReport(models.AbstractModel):
             "debit",
             "amount_currency",
         ]
+
+    def _report_line_chunk_size(self):
+        """Batch size for chunked move-line processing.
+
+        Configurable via the ``account_financial_report.report_chunk_size``
+        system parameter; clamped to a minimum floor so a misconfigured value
+        cannot turn the report into one query per line.
+        """
+        raw = (
+            self.env["ir.config_parameter"]
+            .sudo()
+            .get_param(
+                "account_financial_report.report_chunk_size", DEFAULT_REPORT_CHUNK
+            )
+        )
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = DEFAULT_REPORT_CHUNK
+        return max(value, MIN_REPORT_CHUNK)
+
+    def _iter_move_lines(self, move_line_ids, chunk_size=None):
+        """Yield ``account.move.line`` records in bounded, cache-invalidated chunks.
+
+        ``move_line_ids`` must be the already-resolved, ordered id list (from a
+        single ``search(...).ids``), never the result of ``LIMIT``/``OFFSET``
+        pagination over a non-unique ``ORDER BY``: paginating a tied order can
+        silently skip or duplicate rows between pages. Each chunk is browsed,
+        yielded, and then its ORM cache is invalidated, so the field cache stays
+        O(chunk) instead of O(total lines) -- the growth that exhausts worker
+        memory on full-year, high-volume reports.
+        """
+        # prefetch_fields=False: load only the accessed columns per chunk, not
+        # every column of the (fat) account.move.line model.
+        aml = self.env["account.move.line"].with_context(prefetch_fields=False)
+        if chunk_size is None:
+            chunk_size = self._report_line_chunk_size()
+        for chunk_ids in split_every(chunk_size, move_line_ids):
+            # exists() drops lines deleted between the initial search and now
+            # (single transaction) so field access on the chunk can't raise.
+            chunk = aml.browse(chunk_ids).exists()
+            yield chunk
+            chunk.invalidate_recordset()
 
     def _get_report_values(self, docids, data):
         wizard = self.env[data["wizard_name"]].browse(data["wizard_id"])

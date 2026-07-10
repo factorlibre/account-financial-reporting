@@ -3,6 +3,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from datetime import datetime
+from unittest.mock import patch
 
 from dateutil.relativedelta import relativedelta
 
@@ -11,6 +12,7 @@ from odoo.tests import tagged
 from odoo.tests.common import Form
 
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
+from odoo.addons.account_financial_report.report.abstract_report import MIN_REPORT_CHUNK
 
 
 @tagged("post_install", "-at_install")
@@ -281,3 +283,129 @@ class TestJournalReport(AccountTestInvoicingCommon):
 
         self.check_report_journal_debit_credit(res_data, 250, 250)
         self.check_report_journal_debit_credit_taxes(res_data, 300, 0, 50, 0)
+
+    # --- Batched move-line processing (memory optimisation) ---------------
+    #
+    # These tests pin the equivalence of the batched _get_move_lines: its
+    # output must not depend on the batch size. The batch size is forced small
+    # by patching _report_line_chunk_size (the config-driven value is clamped
+    # to MIN_REPORT_CHUNK, so it cannot be pushed below the floor on purpose).
+
+    def _journal_ledger_wizard(self, journals=None):
+        journals = journals or self.journal_sale
+        return self.JournalLedgerReportWizard.create(
+            {
+                "date_from": self.fy_date_start,
+                "date_to": self.fy_date_end,
+                "company_id": self.company.id,
+                "journal_ids": [(6, 0, journals.ids)],
+                "move_target": "all",
+            }
+        )
+
+    def test_04_report_chunk_size_floor(self):
+        """A misconfigured chunk size is clamped to the minimum floor."""
+        report = self.JournalLedgerReport
+        param = self.env["ir.config_parameter"].sudo()
+        param.set_param("account_financial_report.report_chunk_size", "1")
+        self.assertEqual(report._report_line_chunk_size(), MIN_REPORT_CHUNK)
+        param.set_param("account_financial_report.report_chunk_size", "5000")
+        self.assertEqual(report._report_line_chunk_size(), 5000)
+
+    def test_05_journal_ledger_chunked_equivalence(self):
+        """Batching _get_move_lines keeps int move-id keys and loses no line."""
+        move = self._add_move(Date.today(), self.journal_sale, 0, 100, 100, 0)
+        move.action_post()
+        report = self.JournalLedgerReport
+        wizard = self._journal_ledger_wizard()
+        with patch.object(type(report), "_report_line_chunk_size", return_value=1):
+            (
+                move_line_ids,
+                move_lines,
+                _acc,
+                _prt,
+                _cur,
+                _tax_line,
+                _tax,
+            ) = report._get_move_lines(move.ids, wizard, self.journal_sale.ids)
+        for key in move_lines:
+            self.assertIsInstance(key, int)
+        self.assertIn(move.id, move_lines)
+        report_lines = move_lines[move.id]
+        self.assertEqual(len(report_lines), len(move.line_ids))
+        src = {ml.id: (ml.debit, ml.credit) for ml in move.line_ids}
+        for rl in report_lines:
+            self.assertIn(rl["move_line_id"], src)
+            self.assertEqual((rl["debit"], rl["credit"]), src[rl["move_line_id"]])
+        self.assertEqual(set(move_line_ids), set(move.line_ids.ids))
+
+    def test_06_journal_ledger_multi_move_auto_sequence(self):
+        """With several moves split across batches, auto_sequence is decremented
+        once per move (not per line, not per batch)."""
+        move1 = self._add_move(Date.today(), self.journal_sale, 0, 100, 100, 0)
+        move2 = self._add_move(Date.today(), self.journal_sale, 0, 50, 50, 0)
+        (move1 + move2).action_post()
+        report = self.JournalLedgerReport
+        wizard = self._journal_ledger_wizard()
+        with patch.object(type(report), "_report_line_chunk_size", return_value=1):
+            _ids, move_lines, _a, _p, _c, _t, _tx = report._get_move_lines(
+                [move1.id, move2.id], wizard, self.journal_sale.ids
+            )
+        self.assertEqual(set(move_lines.keys()), {move1.id, move2.id})
+        seqs = {}
+        for mid, lines in move_lines.items():
+            seq_set = {ln["auto_sequence"] for ln in lines}
+            self.assertEqual(len(seq_set), 1, "all lines of a move share auto_sequence")
+            seqs[mid] = seq_set.pop()
+        self.assertEqual(
+            len(set(seqs.values())), 2, "different moves -> different auto_sequence"
+        )
+
+    def test_07_journal_ledger_chunk_invariance_with_taxes(self):
+        """_get_move_lines output is identical regardless of batch size,
+        including the tax circuit (tax_ids / exigibility)."""
+        move_form = Form(
+            self.env["account.move"].with_context(default_move_type="out_invoice")
+        )
+        move_form.partner_id = self.partner_2
+        move_form.journal_id = self.journal_sale
+        with move_form.invoice_line_ids.new() as line_form:
+            line_form.name = "test"
+            line_form.quantity = 2.0
+            line_form.price_unit = 150.0
+            line_form.account_id = self.income_account
+            line_form.tax_ids.add(self.tax_15_s)
+        invoice = move_form.save()
+        invoice.action_post()
+        report = self.JournalLedgerReport
+        wizard = self._journal_ledger_wizard()
+
+        with patch.object(type(report), "_report_line_chunk_size", return_value=1):
+            r_chunk = report._get_move_lines(invoice.ids, wizard, self.journal_sale.ids)
+        with patch.object(type(report), "_report_line_chunk_size", return_value=5000):
+            r_single = report._get_move_lines(
+                invoice.ids, wizard, self.journal_sale.ids
+            )
+
+        # The order between lines tied in the report `order` is not guaranteed
+        # by Postgres across two independent searches (inherent to the original
+        # code, not to the batching); compare per move sorting by move_line_id.
+        def _by_move(move_lines):
+            return {
+                mid: sorted(lines, key=lambda d: d["move_line_id"])
+                for mid, lines in move_lines.items()
+            }
+
+        # Whole return tuple must be batch-invariant, not just Move_Lines:
+        # move_line_ids (0, order-insensitive), Move_Lines (1), account (2),
+        # partner (3), currency (4), tax_line (5) and taxes (6) data.
+        self.assertEqual(set(r_chunk[0]), set(r_single[0]))
+        self.assertEqual(_by_move(r_chunk[1]), _by_move(r_single[1]))
+        self.assertEqual(r_chunk[2], r_single[2])
+        self.assertEqual(r_chunk[3], r_single[3])
+        self.assertEqual(r_chunk[4], r_single[4])
+        self.assertEqual(r_chunk[5], r_single[5])
+        self.assertEqual(r_chunk[6], r_single[6])
+        self.assertTrue(
+            r_chunk[6], "the fixture must carry taxes to exercise the circuit"
+        )
