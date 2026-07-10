@@ -186,6 +186,17 @@ class JournalLedgerReport(models.AbstractModel):
     def _get_query_taxes_params(self, move_lines):
         return {"move_line_ids": tuple(move_lines.ids)}
 
+    def _collect_related_ids(self, ml, related):
+        """Accumulate the related ids of a line into the ``related`` buckets."""
+        if ml.account_id:
+            related["account"].add(ml.account_id.id)
+        if ml.partner_id:
+            related["partner"].add(ml.partner_id.id)
+        if ml.currency_id:
+            related["currency"].add(ml.currency_id.id)
+        if ml.tax_line_id:
+            related["tax_line"].add(ml.tax_line_id.id)
+
     def _get_move_lines(self, move_ids, wizard, journal_ids):
         move_lines = (
             self.env["account.move.line"]
@@ -224,25 +235,46 @@ class JournalLedgerReport(models.AbstractModel):
                     "name": tax_name,
                     "description": tax_description,
                 }
-        Move_Lines = {}
         auto_sequence = len(move_ids)
         Move_Lines = defaultdict(list)
-        for ml in move_lines:
-            move_id = ml.move_id.id
-            if move_id not in Move_Lines:
-                auto_sequence -= 1
-            taxes = move_line_ids_taxes_data.get(ml.id, {})
-            # Check the exigibility of the move line by id
-            # this way we avoid the recreation of the recordset which affects to the
-            # performance in the case of a large number of journal items
-            exigible = ml.id in move_lines_exigible_ids
-            Move_Lines[move_id].append(
-                self._get_move_lines_data(ml, wizard, taxes, auto_sequence, exigible)
-            )
-        account_ids_data = self._get_account_data(move_lines.account_id)
-        partner_ids_data = self._get_partner_data(move_lines.partner_id)
-        currency_ids_data = self._get_currency_data(move_lines.currency_id)
-        tax_line_ids_data = self._get_tax_line_data(move_lines.tax_line_id)
+        # Process the move lines in memory-bounded batches: the ORM field cache
+        # is invalidated between chunks so it stays O(chunk) instead of O(total
+        # lines), which exhausts the worker on full-year, high-volume journals.
+        # Related ids are collected on the fly to avoid a final O(N) mapped read
+        # over the whole recordset.
+        related = {
+            "account": set(),
+            "partner": set(),
+            "currency": set(),
+            "tax_line": set(),
+        }
+        for chunk in self._iter_move_lines(move_lines.ids):
+            for ml in chunk:
+                move_id = ml.move_id.id
+                if move_id not in Move_Lines:
+                    auto_sequence -= 1
+                taxes = move_line_ids_taxes_data.get(ml.id, {})
+                # Check the exigibility of the move line by id, avoiding the
+                # recreation of the recordset (slow with many journal items).
+                exigible = ml.id in move_lines_exigible_ids
+                Move_Lines[move_id].append(
+                    self._get_move_lines_data(
+                        ml, wizard, taxes, auto_sequence, exigible
+                    )
+                )
+                self._collect_related_ids(ml, related)
+        account_ids_data = self._get_account_data(
+            self.env["account.account"].browse(sorted(related["account"]))
+        )
+        partner_ids_data = self._get_partner_data(
+            self.env["res.partner"].browse(sorted(related["partner"]))
+        )
+        currency_ids_data = self._get_currency_data(
+            self.env["res.currency"].browse(sorted(related["currency"]))
+        )
+        tax_line_ids_data = self._get_tax_line_data(
+            self.env["account.tax"].browse(sorted(related["tax_line"]))
+        )
         return (
             move_lines.ids,
             Move_Lines,

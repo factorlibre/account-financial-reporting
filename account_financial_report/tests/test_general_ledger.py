@@ -5,6 +5,7 @@
 
 import time
 from datetime import date
+from unittest.mock import patch
 
 from odoo import api, fields
 from odoo.tests import tagged
@@ -760,3 +761,44 @@ class TestGeneralLedgerReport(AccountTestInvoicingCommon):
         ]
         self.assertEqual(len(general_ledger_code_set), len(all_accounts_code_set))
         self.assertTrue(general_ledger_code_set == all_accounts_code_set)
+
+    def test_chunked_equivalence_general_ledger(self):
+        """Batching _get_period_ml_data does not alter gen_ld_data.
+
+        Compares the accumulated structure with a tiny batch vs a large one.
+        The comparison is dict-based (robust to the tie order of date,move_name,
+        which Postgres does not guarantee between two searches): everything in
+        gen_ld_data is keyed by id or is a sum, no ordered lists. The batch size
+        is forced small by patching _report_line_chunk_size (the config value is
+        clamped to the floor, so it cannot be pushed below it on purpose).
+        """
+        self._add_move(self.fy_date_start, 300, 0, 0, 300)
+        self._add_move(self.fy_date_end, 150, 0, 0, 150)
+        report = self.env["report.account_financial_report.general_ledger"]
+        common = dict(
+            account_ids=(self.receivable_account + self.income_account).ids,
+            partner_ids=[],
+            company_id=self.env.company.id,
+            foreign_currency=False,
+            only_posted_moves=False,
+            date_from=self.fy_date_start,
+            date_to=self.fy_date_end,
+            cost_center_ids=[],
+            extra_domain=None,
+            grouped_by="none",
+        )
+        with patch.object(type(report), "_report_line_chunk_size", return_value=1):
+            gen_chunked = {}
+            res_chunked = report._get_period_ml_data(gen_ld_data=gen_chunked, **common)
+        with patch.object(type(report), "_report_line_chunk_size", return_value=5000):
+            gen_single = {}
+            res_single = report._get_period_ml_data(gen_ld_data=gen_single, **common)
+        self.assertTrue(gen_chunked, "there must be data for the test to be meaningful")
+        self.assertEqual(gen_chunked, gen_single)
+        # The whole return tuple accumulates in the same loop, so all of it must
+        # be batch-invariant, not just gen_ld_data: accounts (1), journals (2),
+        # full_reconcile (3), taxes (4) and analytic (5) data (dicts keyed by
+        # id), plus reconciled-after-date ids (6, order-insensitive).
+        for i in range(1, 6):
+            self.assertEqual(res_chunked[i], res_single[i])
+        self.assertEqual(set(res_chunked[6]), set(res_single[6]))
