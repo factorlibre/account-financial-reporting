@@ -212,6 +212,38 @@ class AgedPartnerBalanceReport(models.AbstractModel):
             yield chunk
             chunk.invalidate_recordset()
 
+    def _iter_move_line_data(
+        self, domain, ml_fields, order="date,move_name", chunk_size=None
+    ):
+        """Yield ``account.move.line`` ``search_read`` dicts in bounded chunks.
+
+        Same principle as ``_iter_move_lines`` but for reports that consume
+        ``search_read`` dicts instead of records. The order and id set are
+        resolved with a SINGLE ``search(domain, order)`` (never ``LIMIT``/
+        ``OFFSET`` over a non-unique ``ORDER BY``, which can skip/duplicate rows
+        between pages); each chunk is read by id, re-ordered to that resolved
+        order, yielded row by row, and then the ORM model cache is invalidated
+        so it stays O(chunk) instead of O(total lines).
+        """
+        aml = self.env["account.move.line"]
+        if chunk_size is None:
+            chunk_size = self._report_line_chunk_size()
+        ordered_ids = aml.search(domain, order=order).ids
+        for chunk_ids in split_every(chunk_size, ordered_ids):
+            rows_by_id = {
+                row["id"]: row
+                for row in aml.search_read(
+                    [("id", "in", list(chunk_ids))], fields=ml_fields
+                )
+            }
+            for ml_id in chunk_ids:
+                # A line deleted between the initial search and this read is
+                # skipped (expected for a read-only report) instead of raising.
+                row = rows_by_id.get(ml_id)
+                if row is not None:
+                    yield row
+            aml.invalidate_model()
+
     def _get_report_values(self, docids, data):
         wizard = self.env[data["wizard_name"]].browse(data["wizard_id"])
         res = {f"{c.expression_label}_visible": c.is_visible for c in wizard.column_ids}
